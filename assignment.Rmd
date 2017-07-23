@@ -1,0 +1,101 @@
+---
+title: "Weight Lifting Exercise Analysis"
+author: "Ashutosh"
+date: "23 July 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## About Data Set
+
+The data set is taken from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. The goal is to qualify how well they do it.
+
+```{r dataset}
+training <- read.csv('pml-training.csv', na.strings=c('#DIV/0', '', 'NA'))
+dim(training)
+```
+
+## Data Cleaning
+
+After having a look at the data, there are lot of sparse features having lot of NAs. The columns containing more than 95% NAs are identified and removed. 
+
+```{r cleanup1}
+na_count <-sapply(training, function(y) sum(is.na(y)))
+na_percent <- data.frame(na_count)/nrow(training)
+training_remove_sparse_records<-training[,na_percent<0.95]
+```
+
+Columns 1:6 do not cotribute to outcome so are removed as well. These columns are either identifier or timestamps which do not contribute the outcome.
+
+```{r cleanup2}
+str(training_remove_sparse_records[,1:6])
+training_clean<-training_remove_sparse_records[,-c(1:6)]
+dim(training_clean)
+```
+
+## Data Exploration
+Plot the correlation matrix of the data set. Diagonal elements are set to 0.
+
+```{r fig.width=14, fig.height=12}
+library(caret)
+training_explore<-training_clean
+training_explore$classe<-as.numeric(training_explore$classe)
+cor_matrix<-abs(cor(training_explore))
+diag(cor_matrix)<-0
+library(corrplot)
+corrplot(cor_matrix, method="square")
+```
+
+From the plot of correlation matrix, it is clear that lot of predictors are higly correlated with each other. So using PCA do reduce dimensions seem like an good option.
+
+```{r}
+prComp<-prcomp(training_clean[,-54],scale. = TRUE)
+std_dev <- prComp$sdev
+pr_var <- std_dev^2
+prop_varex <- pr_var/sum(pr_var)
+sum(prop_varex[1:30])
+plot(cumsum(prop_varex), xlab = "Principal Component",ylab = "Cumulative Proportion of Variance Explained",type = "b")
+abline(h=0.975,col='red',v=30)
+```
+
+*30 Principal Components explain about 97.5 % of total variance. So by using PCA, the dimensions are reduces from 53 to 30.*
+
+## Model Building
+
+For model building, Random Forest is used over the data set preprocessed using PCA. Repeated Cross validation with 10 folds and 3 repeats is applied to avoid over fitting. doMC is used to parallelize the model creation.
+
+```{r}
+train.data<-data.frame(classe = training_clean$classe, prComp$x)
+train.data <- train.data[,1:30]
+metric <- "Accuracy"
+control <- trainControl(method="repeatedcv", number=10, repeats=3)
+mtry <- sqrt(ncol(train.data))
+tunegrid <- expand.grid(.mtry=mtry)
+library(doMC)
+registerDoMC(cores = 4)
+model_rf <- train(classe~.,data=train.data, method="rf", metric=metric, tuneGrid=tunegrid, trControl=control)
+print(model_rf)
+prediction_rf<-predict(model_rf, newdata =train.data)
+confusionMatrix(prediction_rf,train.data$classe)
+```
+
+## Applying on test data
+
+Test data is cleaned and preprocessed using the same technique. PCA is applied using the preprocessing model built on training data.
+The random forest model built on the training data is then applied on the test data to yield the results.
+
+```{r}
+testing <- read.csv('pml-testing.csv', na.strings=c('#DIV/0', '', 'NA'))
+na_count <-sapply(testing, function(y) sum(is.na(y)))
+na_percent <- data.frame(na_count)/nrow(testing)
+testing_remove_sparse_records<-testing[,na_percent<0.95]
+testing_clean<-testing_remove_sparse_records[,-c(1:6)]
+test.data<-predict(prComp, newdata = testing_clean)
+test.data <- as.data.frame(test.data)
+test.data <- test.data[,1:30]
+pred_test <- predict(model_rf, test.data)
+pred_test
+```
